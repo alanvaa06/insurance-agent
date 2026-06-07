@@ -4,6 +4,7 @@ The store is created lazily via ``get_policy_store()`` rather than at import
 time, so importing the agent does not require an API key or a ChromaDB on disk
 (important for tests and for clean failure messages).
 """
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,57 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
         if len(chunk) > 50:
             chunks.append(chunk)
     return chunks
+
+
+def extract_pdf_chunks(pdf_path: str) -> list[str]:
+    """Return all text chunks from a PDF, or [] if it cannot be read."""
+    if not Path(pdf_path).exists():
+        logger.error(f"Policy PDF not found: {pdf_path}")
+        return []
+    chunks: list[str] = []
+    try:
+        reader = PdfReader(pdf_path)
+        for page in reader.pages:
+            chunks.extend(chunk_text(page.extract_text() or ""))
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Error reading PDF {pdf_path}: {e}")
+    return chunks
+
+
+def _keyword_score(query: str, chunk: str) -> int:
+    """Number of distinct query words present in the chunk (case-insensitive)."""
+    q_words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2}
+    if not q_words:
+        return 0
+    c_words = set(re.findall(r"[a-z0-9]+", chunk.lower()))
+    return len(q_words & c_words)
+
+
+class KeywordPolicyStore:
+    """Demo retriever: keyword overlap over PDF chunks. No API key, no model."""
+
+    def __init__(self):
+        self._chunks: list[str] = []
+
+    def populate_from_pdf(self, pdf_path: str | None = None) -> None:
+        if self._chunks:
+            return
+        self._chunks = extract_pdf_chunks(pdf_path or config.policy_pdf_path)
+        logger.info(f"Demo keyword store loaded {len(self._chunks)} chunks")
+
+    def count(self) -> int:
+        return len(self._chunks)
+
+    def retrieve(self, query: str, top_k: int = 5) -> str:
+        if not self._chunks:
+            self.populate_from_pdf()
+        scored = sorted(
+            self._chunks, key=lambda c: _keyword_score(query, c), reverse=True
+        )
+        top = [c for c in scored if _keyword_score(query, c) > 0][:top_k]
+        if not top:  # fall back to the first chunks so retrieval is never empty
+            top = self._chunks[:top_k]
+        return "\n\n".join(top)
 
 
 class PolicyVectorStore:
@@ -113,19 +165,22 @@ class PolicyVectorStore:
         return "\n\n".join(docs[0])
 
 
-_policy_store: PolicyVectorStore | None = None
+_policy_store: PolicyVectorStore | KeywordPolicyStore | None = None
 _policy_store_lock = threading.Lock()
 
 
-def get_policy_store() -> PolicyVectorStore:
-    """Return a lazily-created, process-wide PolicyVectorStore singleton.
+def get_policy_store() -> PolicyVectorStore | KeywordPolicyStore:
+    """Return a lazily-created, process-wide policy store singleton.
 
-    Double-checked locking avoids two concurrent Streamlit sessions each
-    building a ChromaDB client.
+    Demo mode (no API key) uses the keyword store; otherwise the ChromaDB store.
+    Double-checked locking avoids two concurrent Streamlit sessions each building
+    a store.
     """
     global _policy_store
     if _policy_store is None:
         with _policy_store_lock:
             if _policy_store is None:
-                _policy_store = PolicyVectorStore()
+                _policy_store = (
+                    KeywordPolicyStore() if config.demo_mode else PolicyVectorStore()
+                )
     return _policy_store

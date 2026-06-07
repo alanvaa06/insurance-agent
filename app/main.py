@@ -132,9 +132,8 @@ def initialize_vector_store() -> bool:
     """Populate the policy index once. Returns True when ready."""
     if st.session_state.get("vector_store_ready"):
         return True
-    if not config.is_api_key_configured():
-        return False
-    with st.spinner("Indexing policy documents"):
+    label = "Loading policy documents" if config.demo_mode else "Indexing policy documents"
+    with st.spinner(label):
         try:
             get_policy_store().populate_from_pdf()
             st.session_state.vector_store_ready = True
@@ -280,9 +279,10 @@ def sidebar():
         st.subheader("Status")
         ready = st.session_state.get("vector_store_ready")
         rows = {
-            "Model": config.model_name,
+            "Mode": "Demo" if config.demo_mode else "Live",
+            "Model": "Rule-based (demo)" if config.demo_mode else config.model_name,
             "Policy index": "Ready" if ready else "Not loaded",
-            "API key": "Configured" if config.is_api_key_configured() else "Missing",
+            "API key": "Configured" if config.is_api_key_configured() else "Not set",
         }
         for key, val in rows.items():
             st.markdown(
@@ -305,12 +305,11 @@ def main():
 
     sidebar()
 
-    if not config.is_api_key_configured():
-        st.warning(
-            "No OpenAI API key configured. Add OPENAI_API_KEY to your .env file "
-            "(see .env.example) to process claims."
+    if config.demo_mode:
+        st.info(
+            "Demo mode: local keyword retrieval and a rule-based adjudicator, no "
+            "API key required. Set OPENAI_API_KEY for live LLM adjudication."
         )
-        return
 
     initialize_vector_store()
 

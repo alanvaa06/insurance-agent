@@ -11,11 +11,17 @@ from app.utils.config import config
 
 @lru_cache(maxsize=1)
 def get_llm(temperature: float = 0):
-    """Return a cached ChatOpenAI instance.
+    """Return a cached chat model.
 
-    Imported lazily so that `import app.agent.tools` does not require the
-    OpenAI SDK to be configured (e.g. during tests).
+    In demo mode (no API key) this is a rule-based StubLLM so the app runs with
+    no secrets. Otherwise a real ChatOpenAI. Imported lazily so that
+    `import app.agent.tools` does not require the OpenAI SDK to be configured.
     """
+    if config.demo_mode:
+        from app.agent.stub_llm import StubLLM
+
+        return StubLLM()
+
     from langchain_openai import ChatOpenAI
 
     if not config.is_api_key_configured():

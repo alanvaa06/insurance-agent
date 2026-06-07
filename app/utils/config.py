@@ -89,6 +89,18 @@ class Config:
         """True if an OpenAI API key is present. Lets callers fail clearly."""
         return bool(self.openai_api_key.strip())
 
+    @property
+    def demo_mode(self) -> bool:
+        """Run without OpenAI: local keyword retrieval + rule-based adjudicator.
+
+        Auto-enabled when no API key is set; can be forced with DEMO_MODE=true.
+        Lets the app (and a public Hugging Face Space) run with no secrets.
+        """
+        override = os.getenv("DEMO_MODE")
+        if override is not None:
+            return override.strip().lower() in ("1", "true", "yes", "on")
+        return not self.is_api_key_configured()
+
 
 # Global config instance
 config = Config()
