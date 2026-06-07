@@ -1,82 +1,116 @@
-# 🏥 Insurance Claims Processing Agent
+# Insurance Claims Processing Agent
 
-An AI-powered insurance claims processing system using **LangGraph**, **RAG**, and **GPT-4o-mini** to automate claim validation, policy retrieval, and decision-making.
+Automated adjudication of auto-repair insurance claims. A LangGraph workflow
+parses and validates a claim, checks policy coverage, retrieves relevant policy
+text (RAG over a policy PDF with ChromaDB), asks an LLM for a policy-grounded
+recommendation, and produces a final decision: **Approved**, **Denied**,
+**Requires review**, or **Invalid**.
 
-## 🚀 Features
+## How it works
 
-- ✅ **Automated Claims Processing**: Parse, validate, and adjudicate insurance claims
-- 🔍 **RAG-based Policy Retrieval**: Intelligent retrieval from policy documents using ChromaDB
-- 🤖 **LangGraph Workflow**: Structured multi-step agent workflow
-- 📊 **Interactive UI**: Streamlit interface for manual entry or JSON upload
-- 📝 **Detailed Logging**: Complete audit trail of all agent decisions
-- 🐳 **Docker Support**: Easy deployment with Docker
+The workflow is a state machine. Mechanical steps are deterministic Python so
+they are predictable, free, and unit-testable; only the two genuinely semantic
+steps call the LLM.
 
-## 📋 Prerequisites
+```
+parse -> validate --valid--> coverage_check -> generate_queries (LLM)
+      -> retrieve_policy (RAG) -> recommend (LLM) -> price_check -> finalize -> decision
+                \--invalid--> Invalid
+```
+
+| Step | Type | What it does |
+|------|------|--------------|
+| parse | deterministic | Normalizes claim JSON (handles several field-name schemas) |
+| validate | deterministic | Required fields present, amount > 0 |
+| coverage_check | deterministic | Looks up the policy in `data/coverage_data.csv` (dues, coverage window) |
+| generate_queries | LLM | Builds policy search queries |
+| retrieve_policy | RAG | Pulls relevant passages from the policy index |
+| recommend | LLM | APPROVE / DENY grounded only in retrieved policy text |
+| price_check | deterministic | Flags claims at/above `HIGH_AMOUNT_THRESHOLD` for review |
+| finalize | deterministic | Combines signals into the final decision |
+
+Decision precedence in `finalize`: coverage `NOT_COVERED` → Denied; high amount →
+Requires review; recommendation DENY → Denied; otherwise → Approved.
+
+## Prerequisites
 
 - Python 3.11+
-- OpenAI API key
-- Docker (optional, for containerized deployment)
+- An OpenAI API key
+- Docker (optional)
 
-## 🛠️ 3 Methods of Installation
+## Setup
 
-### 1. Deploy on AWS EC2 Instance (Clone GitHub  →  Build Docker Image  →  Docker Run)
-### Refer : [AWS_EC2_Deployment_Steps.md](AWS_EC2_Deployment_Steps.md)
+```bash
+git clone <your-repo-url>
+cd insurance-agent
 
-<br>
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Linux/macOS
+source .venv/bin/activate
 
-### 2. Use Pre-Built Docker Image from Docker Hub (Docker Image Pull  →  Docker Run)
-### Refer : [Docker_HUB_TO_Instance.md](Docker_HUB_TO_Instance.md)
+pip install -r requirements.txt
 
-<br>
+cp .env.example .env   # then add your OPENAI_API_KEY
+```
 
-### 3. Local Setup in your instance
+## Run
 
-<br>
+```bash
+streamlit run app/main.py
+```
 
-1. **Clone the repository**
-    ```bash
-    git clone https://github.com/Gr8Learning-2312/insurance-agent.git
-    cd insurance-agent
-    ```
+Open http://localhost:8501. Enter a claim manually or upload a claim JSON
+(see `test_cases/` for examples).
 
-2.  **Create a virtual environment** (recommended):
-    ```bash
-    python -m venv virtual_environment
-    
-    # Windows
-    virtual_environment\Scripts\activate
-    
-    # Linux/Mac
-    source virtual_environment/bin/activate
-    ```
+## Test
 
-3.  **Install dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
+The suite runs with no network and no API key (the LLM and vector store are
+faked):
 
-4.  **Configure Environment Variables**:
-    *   Find the `.env` file in the project root.
-    *   Add your OpenAI API Key & OpenAI Base URL:
-        ```env
-        OPENAI_API_KEY="gl-xxxxxxxxxx"      #  Add your OpenAI API Key
-        OPENAI_BASE_URL="https....../v1"    #  Add your OpenAI Base URL
-        ```
+```bash
+pip install pytest pytest-cov
+pytest
+```
 
-## Running the Application
+End-to-end tests in `tests/test_graph_routing.py` assert the five shipped test
+cases produce the decisions in `test_cases/test_case_expected_results.png`.
 
-1.  **Start the Streamlit server**:
-    ```bash
-    streamlit run app/main.py
-    ```
+## Configuration
 
-2.  **Access the Web Interface**:
-    *   Open your web browser and go to: `http://localhost:8501`
+All settings come from environment variables (see `.env.example`):
 
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OPENAI_API_KEY` | (required) | OpenAI key |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API base (override for proxies) |
+| `MODEL_NAME` | `gpt-4o-mini` | Chat model |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+| `HIGH_AMOUNT_THRESHOLD` | `10000` | Amount that triggers manual review |
+| `POLICY_PDF_PATH` | `./data/policy.pdf` | Policy document to index |
+| `COVERAGE_CSV_PATH` | `./data/coverage_data.csv` | Coverage table |
 
+## Deployment
 
-## Usage
+- AWS EC2: [AWS_EC2_Deployment_Steps.md](AWS_EC2_Deployment_Steps.md)
+- Docker Hub image: [Docker_HUB_TO_Instance.md](Docker_HUB_TO_Instance.md)
+- Local Docker:
 
-1.  Enter your insurance claim details manually or upload the claim details in the JSON format
-2.  Click **"Process Claim"**, to check if the claim is to be Approved or Rejected.
-3.  Monitor the **Logs** of the agent.
+```bash
+docker build -t insurance-agent .
+docker run -p 8501:8501 --env-file .env insurance-agent
+```
+
+## Project layout
+
+```
+app/
+  agent/        workflow graph, tools, coverage, prompts, state, llm factory
+  database/     ChromaDB vector store
+  utils/        config, logging
+data/           policy.pdf, coverage_data.csv
+scripts/        generate_graph.py (renders graph.png)
+tests/          pytest suite
+test_cases/     sample claims + expected results
+```

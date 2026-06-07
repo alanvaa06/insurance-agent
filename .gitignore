@@ -1,0 +1,45 @@
+# Environment / secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+virtual_environment/
+ENV/
+
+# Vector store (regenerated at runtime)
+chroma_db/
+
+# Logs
+logs/
+*.log
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local agent / editor tooling
+.claude/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

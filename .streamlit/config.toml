@@ -1,0 +1,17 @@
+# Native Streamlit theme. Warm-paper light scheme, restrained slate accent.
+# Neutrals are tinted (never pure black/white); accent stays under ~10% of surface.
+
+[theme]
+base = "light"
+primaryColor = "#4B5D78"            # muted slate, used for buttons/focus only
+backgroundColor = "#F8F7F4"         # warm paper
+secondaryBackgroundColor = "#EEEBE5" # inputs, sidebar
+textColor = "#23211E"               # warm ink
+font = "sans serif"
+baseRadius = "0.4rem"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

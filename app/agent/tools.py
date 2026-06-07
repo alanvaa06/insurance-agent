@@ -1,258 +1,274 @@
-"""
-LangChain tools converted from your SmolAgents tools.
-Maps 1:1 with your existing workflow.
+"""Claim-processing operations.
+
+Mechanical steps (parsing, validation, final decision) are deterministic Python
+so they are predictable, free, and unit-testable. Only the two genuinely
+semantic steps -- generating policy search queries and the policy-grounded
+recommendation -- call the LLM. The LLM is injected so tests can supply a fake.
 """
 import json
 import re
-from typing import Dict, Any, List
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from typing import Any, Dict, List, Optional
 
-from app.utils.logger import logger
-from app.utils.config import config
-from app.database.vector_store import policy_store
+from app.agent.llm import get_llm
 from app.agent.prompts import (
-    PARSE_CLAIM_PROMPT,
-    VALIDATE_CLAIM_PROMPT,
     GENERATE_POLICY_QUERIES_PROMPT,
     GENERATE_RECOMMENDATION_PROMPT,
-    FINALIZE_DECISION_PROMPT
 )
+from app.database.vector_store import get_policy_store
+from app.utils.logger import logger
 
-# Initialize LLM
-llm = ChatOpenAI(
-    model=config.model_name,
-    api_key=config.openai_api_key,
-    base_url=config.openai_base_url,
-    temperature=0
-)
+# --- Claim field aliases (support multiple claim schemas) ---
+_AMOUNT_KEYS = ("claim_amount", "total_amount", "estimated_repair_cost", "amount")
+_HOLDER_KEYS = ("policy_holder", "claimant_name", "policyholder", "insured_name")
+_CLAIM_ID_KEYS = ("claim_id", "claim_number", "claimId")
 
-def extract_json(text: str) -> Dict[str, Any]:
-    """Extract JSON from LLM response that might contain markdown or extra text"""
+
+def extract_json(text: str) -> Any:
+    """Extract a JSON value from an LLM response that may wrap it in prose/markdown.
+
+    Uses a brace/bracket-matching scan so nested objects are not truncated the
+    way a non-greedy regex would.
+    """
+    text = text.strip()
     try:
-        # Try direct JSON parse first
         return json.loads(text)
     except json.JSONDecodeError:
-        # Try to find JSON in markdown code blocks
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```', text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(1))
-        
-        # Try to find JSON object/array in text
-        json_match = re.search(r'(\{.*?\}|\[.*?\])', text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group(1))
-        
-        raise ValueError(f"Could not extract JSON from: {text}")
+        pass
+
+    # Strip a ```json ... ``` fence if present.
+    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fence:
+        try:
+            return json.loads(fence.group(1))
+        except json.JSONDecodeError:
+            text = fence.group(1).strip()
+
+    # Scan for the first balanced { } or [ ] block.
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start = text.find(open_ch)
+        if start == -1:
+            continue
+        depth = 0
+        in_str = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == open_ch:
+                    depth += 1
+                elif ch == close_ch:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(text[start : i + 1])
+                        except json.JSONDecodeError:
+                            break
+    raise ValueError(f"Could not extract JSON from: {text[:200]}")
 
 
-@tool
+def _first(data: Dict[str, Any], keys) -> Optional[Any]:
+    for key in keys:
+        if key in data and data[key] not in (None, ""):
+            return data[key]
+    return None
+
+
+def _coerce_amount(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    # Strip currency symbols / thousands separators from strings.
+    cleaned = re.sub(r"[^0-9.\-]", "", str(value))
+    try:
+        return float(cleaned) if cleaned else 0.0
+    except ValueError:
+        return 0.0
+
+
 def parse_claim(claim_json: str) -> Dict[str, Any]:
+    """Parse a claim JSON string into a normalized dict.
+
+    Deterministic -- no LLM. Maps the several field-name variants used across
+    claim schemas onto canonical keys.
     """
-    Parse incoming claim JSON and extract key information.
-    
-    Args:
-        claim_json: Raw claim data as JSON string
-    
-    Returns:
-        Parsed claim data with claim_id, policy_holder, vendor_name, invoice_items, claim_amount
-    """
-    logger.info(f"🔧 TOOL: parse_claim - Processing claim")
-    
+    logger.info("TOOL parse_claim: normalizing claim")
     try:
-        prompt = PARSE_CLAIM_PROMPT.format(claim_json=claim_json)
-        response = llm.invoke(prompt)
-        parsed_data = extract_json(response.content)
-        
-        logger.info(f"✅ Parsed claim ID: {parsed_data.get('claim_id', 'N/A')}")
-        return parsed_data
-    
-    except Exception as e:
-        logger.error(f"❌ Error parsing claim: {e}")
-        return {"error": str(e)}
+        raw = json.loads(claim_json) if isinstance(claim_json, str) else dict(claim_json)
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error(f"parse_claim: invalid claim JSON: {e}")
+        return {"error": f"Invalid claim JSON: {e}"}
+
+    items = raw.get("invoice_items") or []
+    amount = _first(raw, _AMOUNT_KEYS)
+    if amount is None and items:
+        amount = sum(_coerce_amount(i.get("amount")) for i in items if isinstance(i, dict))
+
+    parsed = {
+        "claim_id": _first(raw, _CLAIM_ID_KEYS),
+        "policy_holder": _first(raw, _HOLDER_KEYS),
+        "vendor_name": raw.get("vendor_name"),
+        "invoice_items": items,
+        "claim_amount": _coerce_amount(amount),
+        "policy_number": raw.get("policy_number"),
+        "date_of_loss": raw.get("date_of_loss"),
+    }
+    logger.info(f"parse_claim: claim_id={parsed['claim_id']} amount={parsed['claim_amount']}")
+    return parsed
 
 
-@tool
-def is_valid_query(claim_data: Dict[str, Any]) -> Dict[str, Any]:
+def validate_claim(claim_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate required fields. Deterministic -- no LLM.
+
+    Valid when: claim_id, policy_holder and vendor_name are non-empty and the
+    claim amount is greater than zero.
     """
-    Validate if the claim meets basic requirements.
-    
-    Args:
-        claim_data: Parsed claim data
-    
-    Returns:
-        {"is_valid": bool, "reason": str}
-    """
-    logger.info(f"🔧 TOOL: is_valid_query - Validating claim")
-    
-    try:
-        prompt = VALIDATE_CLAIM_PROMPT.format(
-            claim_id=claim_data.get("claim_id", "N/A"),
-            policy_holder=claim_data.get("policy_holder", "N/A"),
-            vendor_name=claim_data.get("vendor_name", "N/A"),
-            claim_amount=claim_data.get("claim_amount", 0)
-        )
-        
-        response = llm.invoke(prompt)
-        validation_result = extract_json(response.content)
-        
-        is_valid = validation_result.get("is_valid", False)
-        reason = validation_result.get("reason", "")
-        
-        if is_valid:
-            logger.info("✅ Claim is VALID")
-        else:
-            logger.warning(f"⚠️ Claim is INVALID: {reason}")
-        
-        return validation_result
-    
-    except Exception as e:
-        logger.error(f"❌ Error validating claim: {e}")
-        return {"is_valid": False, "reason": f"Validation error: {str(e)}"}
+    logger.info("TOOL validate_claim: checking required fields")
+    missing = []
+    if not _nonempty(claim_data.get("claim_id")):
+        missing.append("claim_id")
+    if not _nonempty(claim_data.get("policy_holder")):
+        missing.append("policy_holder")
+    if not _nonempty(claim_data.get("vendor_name")):
+        missing.append("vendor_name")
+
+    amount = _coerce_amount(claim_data.get("claim_amount"))
+    reasons = []
+    if missing:
+        reasons.append(f"Missing required field(s): {', '.join(missing)}.")
+    if amount <= 0:
+        reasons.append("Claim amount must be greater than 0.")
+
+    if reasons:
+        reason = " ".join(reasons)
+        logger.warning(f"validate_claim: INVALID -- {reason}")
+        return {"is_valid": False, "reason": reason}
+
+    logger.info("validate_claim: VALID")
+    return {"is_valid": True, "reason": ""}
 
 
-@tool
-def generate_policy_queries(claim_data: Dict[str, Any]) -> List[str]:
-    """
-    Generate search queries to retrieve relevant policy information.
-    
-    Args:
-        claim_data: Parsed claim data
-    
-    Returns:
-        List of search query strings
-    """
-    logger.info(f"🔧 TOOL: generate_policy_queries - Creating search queries")
-    
+def _nonempty(value: Any) -> bool:
+    return value is not None and str(value).strip() != ""
+
+
+def generate_policy_queries(claim_data: Dict[str, Any], llm=None) -> List[str]:
+    """Generate 2-3 policy search queries (LLM)."""
+    logger.info("TOOL generate_policy_queries")
+    llm = llm or get_llm()
     try:
         prompt = GENERATE_POLICY_QUERIES_PROMPT.format(
             vendor_name=claim_data.get("vendor_name", "N/A"),
             invoice_items=json.dumps(claim_data.get("invoice_items", [])),
-            claim_amount=claim_data.get("claim_amount", 0)
+            claim_amount=claim_data.get("claim_amount", 0),
         )
-        
         response = llm.invoke(prompt)
         queries = extract_json(response.content)
-        
         if isinstance(queries, dict):
             queries = queries.get("queries", [])
-        
-        logger.info(f"✅ Generated {len(queries)} policy queries")
-        for i, q in enumerate(queries, 1):
-            logger.info(f"   Query {i}: {q}")
-        
+        queries = [str(q) for q in queries if str(q).strip()]
+        logger.info(f"generate_policy_queries: produced {len(queries)} queries")
         return queries
-    
     except Exception as e:
-        logger.error(f"❌ Error generating queries: {e}")
-        return []
+        logger.error(f"generate_policy_queries failed: {e}")
+        # Fall back to a sensible default query so retrieval still runs.
+        return [
+            f"coverage for {claim_data.get('vendor_name', 'repairs')}",
+            "claim amount limits and exclusions",
+        ]
 
 
-@tool
-def retrieve_policy_text(queries: List[str]) -> str:
-    """
-    Retrieve relevant policy text from vector store using generated queries.
-    
-    Args:
-        queries: List of search queries
-    
-    Returns:
-        Combined relevant policy text
-    """
-    logger.info(f"🔧 TOOL: retrieve_policy_text - Retrieving from vector store")
-    
-    try:
-        all_results = []
-        
-        for query in queries:
-            logger.info(f"   Searching for: {query[:60]}...")
-            result = policy_store.retrieve(query, top_k=3)
-            if result:
-                all_results.append(result)
-        
-        combined_text = "\n\n---\n\n".join(all_results)
-        
-        logger.info(f"✅ Retrieved {len(combined_text)} characters of policy text")
-        return combined_text
-    
-    except Exception as e:
-        logger.error(f"❌ Error retrieving policy text: {e}")
-        return ""
+def retrieve_policy_text(queries: List[str], store=None) -> str:
+    """Retrieve and concatenate relevant policy passages from the vector store."""
+    logger.info("TOOL retrieve_policy_text")
+    store = store or get_policy_store()
+    results = []
+    for query in queries:
+        text = store.retrieve(query, top_k=3)
+        if text:
+            results.append(text)
+    combined = "\n\n---\n\n".join(results)
+    logger.info(f"retrieve_policy_text: {len(combined)} chars from {len(results)} queries")
+    return combined
 
 
-@tool
-def generate_recommendation(claim_data: Dict[str, Any], policy_text: str) -> Dict[str, Any]:
-    """
-    Generate claim approval/denial recommendation based on policy.
-    
-    Args:
-        claim_data: Parsed claim data
-        policy_text: Retrieved policy information
-    
-    Returns:
-        {"recommendation": str, "reasoning": str}
-    """
-    logger.info(f"🔧 TOOL: generate_recommendation - Analyzing claim")
-    
+def generate_recommendation(
+    claim_data: Dict[str, Any], policy_text: str, llm=None
+) -> Dict[str, Any]:
+    """Recommend APPROVE / DENY grounded in retrieved policy text (LLM)."""
+    logger.info("TOOL generate_recommendation")
+    llm = llm or get_llm()
     try:
         prompt = GENERATE_RECOMMENDATION_PROMPT.format(
             claim_id=claim_data.get("claim_id", "N/A"),
             vendor_name=claim_data.get("vendor_name", "N/A"),
             claim_amount=claim_data.get("claim_amount", 0),
             invoice_items=json.dumps(claim_data.get("invoice_items", [])),
-            policy_text=policy_text[:2000]  # Limit context size
+            policy_text=(policy_text or "No policy text retrieved.")[:2000],
         )
-        
         response = llm.invoke(prompt)
         recommendation = extract_json(response.content)
-        
-        rec_decision = recommendation.get("recommendation", "UNKNOWN")
-        logger.info(f"✅ Recommendation: {rec_decision}")
-        
+        decision = str(recommendation.get("recommendation", "")).upper()
+        if decision not in ("APPROVE", "DENY"):
+            decision = "DENY"  # Fail safe: do not auto-approve on ambiguity.
+        recommendation["recommendation"] = decision
+        logger.info(f"generate_recommendation: {decision}")
         return recommendation
-    
     except Exception as e:
-        logger.error(f"❌ Error generating recommendation: {e}")
-        return {"recommendation": "ERROR", "reasoning": str(e)}
+        logger.error(f"generate_recommendation failed: {e}")
+        return {
+            "recommendation": "DENY",
+            "reasoning": f"Could not evaluate against policy ({e}); routed for review.",
+        }
 
 
-@tool
+# Decision constants
+APPROVED = "APPROVED"
+DENIED = "DENIED"
+REQUIRES_REVIEW = "REQUIRES_REVIEW"
+INVALID = "INVALID"
+
+
 def finalize_decision(
-    claim_data: Dict[str, Any],
     recommendation: str,
     recommendation_reasoning: str,
-    price_check_result: str
+    price_check_result: str,
+    coverage_status: Optional[str] = None,
+    coverage_reason: str = "",
 ) -> Dict[str, Any]:
+    """Combine signals into a final decision. Deterministic -- no LLM.
+
+    Rules (in order):
+      1. Coverage explicitly NOT_COVERED  -> DENIED
+      2. Price flagged as high amount     -> REQUIRES_REVIEW
+      3. Recommendation DENY              -> DENIED
+      4. Otherwise                        -> APPROVED
     """
-    Finalize the claim decision considering all factors.
-    
-    Args:
-        claim_data: Parsed claim data
-        recommendation: Initial recommendation
-        recommendation_reasoning: Reasoning for recommendation
-        price_check_result: Result of price verification
-    
-    Returns:
-        {"final_decision": str, "final_reasoning": str}
-    """
-    logger.info(f"🔧 TOOL: finalize_decision - Making final decision")
-    
-    try:
-        prompt = FINALIZE_DECISION_PROMPT.format(
-            claim_id=claim_data.get("claim_id", "N/A"),
-            recommendation=recommendation,
-            recommendation_reasoning=recommendation_reasoning,
-            price_check_result=price_check_result
-        )
-        
-        response = llm.invoke(prompt)
-        final_decision = extract_json(response.content)
-        
-        decision = final_decision.get("final_decision", "UNKNOWN")
-        logger.info(f"✅ FINAL DECISION: {decision}")
-        
-        return final_decision
-    
-    except Exception as e:
-        logger.error(f"❌ Error finalizing decision: {e}")
-        return {"final_decision": "ERROR", "final_reasoning": str(e)}
+    logger.info("TOOL finalize_decision")
+    rec = str(recommendation or "").upper()
+
+    if coverage_status == "NOT_COVERED":
+        return {"final_decision": DENIED, "final_reasoning": coverage_reason}
+
+    if price_check_result == "HIGH_AMOUNT_FLAGGED":
+        return {
+            "final_decision": REQUIRES_REVIEW,
+            "final_reasoning": (
+                "Claim amount exceeds the auto-approval threshold and requires "
+                f"manual review. {recommendation_reasoning}"
+            ).strip(),
+        }
+
+    if rec == "DENY":
+        return {"final_decision": DENIED, "final_reasoning": recommendation_reasoning}
+
+    return {"final_decision": APPROVED, "final_reasoning": recommendation_reasoning}

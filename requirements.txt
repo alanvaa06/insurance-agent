@@ -1,25 +1,26 @@
-# Core Framework
-streamlit==1.31.0
-langchain==1.1.3
-langchain_openai==1.1.3
-langchain-core==1.2.9
-langgraph==1.0.4 
+# Insurance Claims Processing Agent - pinned, coherent dependency set.
+# The langchain / langchain-core / langgraph versions are coupled: langchain
+# 1.2.x requires langgraph >=1.1.5,<1.2.0 and langchain-core 1.x. Do not bump
+# one without the others.
 
-# Vector Store & Embeddings
-chromadb==1.4.0
+# Web UI
+streamlit==1.58.0
 
-# PDF Processing
-PyPDF2==3.0.1
+# LangChain / LangGraph (keep these three in sync)
+langchain==1.2.15
+langchain-core==1.4.1
+langchain-openai==1.1.3
+langgraph==1.1.10
 
-# Utilities
-python-dotenv==1.0.1
-pydantic==2.7.4
-
-# OpenAI
+# OpenAI SDK
 openai==2.9.0
 
-# Web Server
-gunicorn==21.2.0
+# Vector store
+chromadb==1.5.9
 
-# Monitoring & Logging
-python-json-logger==2.0.7
+# PDF parsing (pypdf supersedes the deprecated PyPDF2)
+pypdf==6.9.2
+
+# Config & validation
+python-dotenv==1.0.1
+pydantic==2.12.3

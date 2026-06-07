@@ -1,383 +1,307 @@
-"""
-Streamlit UI for Insurance Claims Agent
-Allows users to write or upload claim details
-"""
-import streamlit as st
+"""Streamlit interface for the Insurance Claims Processing Agent."""
 import json
-import sys
 import logging
-import io
+import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
-# Add parent directory to Python path
-parent_dir = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(parent_dir))
+import streamlit as st
 
-# Initialize app components
-from app.agent.graph import claims_graph
-from app.database.vector_store import policy_store
-from app.utils.logger import logger
-from app.utils.config import config
+# Make the project root importable when run as `streamlit run app/main.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.agent.graph import get_claims_graph  # noqa: E402
+from app.database.vector_store import get_policy_store  # noqa: E402
+from app.utils.config import config  # noqa: E402
+from app.utils.logger import logger  # noqa: E402
+
+# --- Decision presentation (status, tone) ---
+DECISION_STYLES = {
+    "APPROVED": ("Approved", "ok"),
+    "DENIED": ("Denied", "bad"),
+    "INVALID": ("Invalid", "bad"),
+    "REQUIRES_REVIEW": ("Requires review", "warn"),
+}
 
 
-# Custom log handler for Streamlit display
+# --- Streamlit log capture (per execution) ---
 class StreamlitLogHandler(logging.Handler):
-    """Log handler that stores messages in session state for UI display"""
     def emit(self, record):
-        log_entry = self.format(record)
-        # Get current execution ID
+        entry = self.format(record)
         execution_id = st.session_state.get("current_execution_id")
-        if execution_id:
-            if "execution_logs" not in st.session_state:
-                st.session_state.execution_logs = {}
-            if execution_id not in st.session_state.execution_logs:
-                st.session_state.execution_logs[execution_id] = []
-            # Avoid repeating the same log entry consecutively
-            exec_list = st.session_state.execution_logs[execution_id]
-            if not exec_list or exec_list[-1] != log_entry:
-                exec_list.append(log_entry)
-                st.session_state.execution_logs[execution_id] = exec_list
+        if not execution_id:
+            return
+        store = st.session_state.setdefault("execution_logs", {})
+        bucket = store.setdefault(execution_id, [])
+        if not bucket or bucket[-1] != entry:
+            bucket.append(entry)
 
 
-# Add Streamlit handler to logger
-if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
-    streamlit_handler = StreamlitLogHandler()
-    formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] [%(module)s] - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+def _attach_log_handler():
+    if not any(isinstance(h, StreamlitLogHandler) for h in logger.handlers):
+        handler = StreamlitLogHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                "[%(asctime)s] %(levelname)s %(module)s - %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
+        logger.addHandler(handler)
+
+
+def _inject_css():
+    st.markdown(
+        """
+        <style>
+        html, body, [class*="css"] { font-family: ui-sans-serif, system-ui,
+            -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .block-container { max-width: 960px; padding-top: 2.2rem; }
+
+        .app-title { font-size: 1.55rem; font-weight: 650; letter-spacing: -0.01em;
+            color: #23211E; margin: 0; }
+        .app-subtitle { font-size: 0.95rem; color: #6E6A62; margin: 0.25rem 0 0; }
+        .app-rule { border: none; border-top: 1px solid #DEDAD2;
+            margin: 1.1rem 0 1.6rem; }
+
+        .decision { border: 1px solid #DEDAD2; border-radius: 0.5rem;
+            padding: 1.1rem 1.25rem; margin: 0.5rem 0 1rem; background: #FFFFFF; }
+        .decision-head { display: flex; align-items: center; gap: 0.6rem; }
+        .decision-dot { width: 0.7rem; height: 0.7rem; border-radius: 50%;
+            flex: 0 0 auto; }
+        .decision-label { font-size: 1.1rem; font-weight: 620; letter-spacing: -0.01em; }
+        .decision-reason { margin: 0.55rem 0 0; color: #45413A; line-height: 1.55;
+            font-size: 0.94rem; }
+        .decision.ok   { background: #F1F5F1; border-color: #CBDDCD; }
+        .decision.ok   .decision-dot { background: #3E7D5C; }
+        .decision.warn { background: #F6F1E4; border-color: #E2D6B6; }
+        .decision.warn .decision-dot { background: #9A7B22; }
+        .decision.bad  { background: #F6ECEA; border-color: #E3CBC6; }
+        .decision.bad  .decision-dot { background: #A8463C; }
+
+        .meta-row { display: flex; justify-content: space-between;
+            padding: 0.35rem 0; border-bottom: 1px solid #E6E2DA; font-size: 0.9rem; }
+        .meta-row:last-child { border-bottom: none; }
+        .meta-key { color: #6E6A62; }
+        .meta-val { color: #23211E; font-weight: 540; }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    streamlit_handler.setFormatter(formatter)
-    logger.addHandler(streamlit_handler)
 
 
-# Page configuration
-st.set_page_config(
-    page_title="Insurance Claims Processing Agent",
-    page_icon="🏥",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    .success-box {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        background-color: #d4edda;
-        border: 1px solid #c3e6cb;
-        color: #155724;
-    }
-    .error-box {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        color: #721c24;
-    }
-    .warning-box {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        background-color: #fff3cd;
-        border: 1px solid #ffeeba;
-        color: #856404;
-    }
-</style>
-""", unsafe_allow_html=True)
+def render_decision(decision: str, reasoning: str):
+    label, tone = DECISION_STYLES.get(decision, (decision or "Unknown", "warn"))
+    st.markdown(
+        f"""
+        <div class="decision {tone}">
+          <div class="decision-head">
+            <span class="decision-dot"></span>
+            <span class="decision-label">{label}</span>
+          </div>
+          <p class="decision-reason">{reasoning or "No reasoning provided."}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-def initialize_vector_store():
-    """Initialize vector store with policy documents"""
-    if st.session_state.get("vector_store_initialized"):
-        return
-    
-    with st.spinner("🔄 Loading policy documents into vector store..."):
-        try:
-            policy_store.populate_from_pdf()
-            st.session_state.vector_store_initialized = True
-            logger.info("Vector store initialized successfully")
-        except Exception as e:
-            st.error(f"Error initializing vector store: {e}")
-            logger.error(f"Vector store initialization failed: {e}")
-
-
-def display_logs():
-    """Display captured logs for current execution only"""
+def render_logs():
     execution_id = st.session_state.get("current_execution_id")
-    if execution_id and "execution_logs" in st.session_state:
-        logs = st.session_state.execution_logs.get(execution_id, [])
-        if logs:
-            with st.expander("📋 Processing Logs", expanded=False):
-                logs_text = "\n".join(logs)
-                st.code(logs_text, language="log")
+    logs = st.session_state.get("execution_logs", {}).get(execution_id, [])
+    if logs:
+        with st.expander("Processing log", expanded=False):
+            st.code("\n".join(logs), language="log")
 
 
-def start_execution():
-    """Start a new execution and create a unique execution ID"""
-    import uuid
+def start_execution() -> str:
     execution_id = str(uuid.uuid4())
     st.session_state.current_execution_id = execution_id
-    # Reset execution_logs so only this execution's logs are kept
-    st.session_state.execution_logs = {}
-    st.session_state.execution_logs[execution_id] = []
+    st.session_state.execution_logs = {execution_id: []}
     return execution_id
 
 
-def end_execution():
-    """End current execution"""
-    st.session_state.current_execution_id = None
+def initialize_vector_store() -> bool:
+    """Populate the policy index once. Returns True when ready."""
+    if st.session_state.get("vector_store_ready"):
+        return True
+    if not config.is_api_key_configured():
+        return False
+    with st.spinner("Indexing policy documents"):
+        try:
+            get_policy_store().populate_from_pdf()
+            st.session_state.vector_store_ready = True
+            return True
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Could not initialize the policy index: {e}")
+            logger.error(f"Vector store init failed: {e}")
+            return False
 
 
 def process_claim(claim_data: dict) -> dict:
-    """Process claim through LangGraph workflow"""
-    # Start tracking this execution
     start_execution()
-    
-    logger.info(f"=" * 80)
-    logger.info(f"🚀 NEW CLAIM PROCESSING REQUEST")
-    logger.info(f"Claim ID: {claim_data.get('claim_id', 'N/A')}")
-    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"=" * 80)
-    
-    try:
-        # Convert claim data to JSON string
-        claim_json = json.dumps(claim_data)
-        
-        # Initialize state
-        initial_state = {
-            "claim_json": claim_json,
-            "current_step": "initialized"
+    logger.info("New claim received: %s", claim_data.get("claim_id", "N/A"))
+    logger.info("Timestamp: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    initial_state = {"claim_json": json.dumps(claim_data), "current_step": "initialized"}
+    final_state = get_claims_graph().invoke(initial_state)
+    logger.info("Final decision: %s", final_state.get("final_decision", "N/A"))
+    return final_state
+
+
+def show_result(result: dict):
+    render_decision(result.get("final_decision", "UNKNOWN"), result.get("final_reasoning", ""))
+    render_logs()
+    with st.expander("Processing detail"):
+        st.json(
+            {
+                "claim_id": result.get("claim_id"),
+                "valid": result.get("is_valid"),
+                "validation_reason": result.get("validation_reason") or None,
+                "coverage_status": result.get("coverage_status"),
+                "coverage_reason": result.get("coverage_reason"),
+                "queries_generated": len(result.get("policy_queries") or []),
+                "recommendation": result.get("recommendation"),
+                "recommendation_reasoning": result.get("recommendation_reasoning"),
+                "price_check": result.get("price_check_result"),
+                "final_decision": result.get("final_decision"),
+            }
+        )
+
+
+def claim_form():
+    st.caption("Required fields are marked with an asterisk.")
+    col1, col2 = st.columns(2)
+    with col1:
+        claim_id = st.text_input("Claim ID *", placeholder="CLM-2026-001")
+        policy_holder = st.text_input("Policy holder *", placeholder="Jane Doe")
+    with col2:
+        vendor_name = st.text_input("Service provider *", placeholder="AutoFix Garage")
+        policy_number = st.text_input("Policy number", placeholder="Optional, e.g. PN-2")
+
+    st.write("Invoice items")
+    items = st.session_state.setdefault("invoice_items", [{"item": "", "amount": 0.0}])
+    for i, item in enumerate(items):
+        c_desc, c_amt, c_rm = st.columns([3, 1.4, 0.5])
+        desc = c_desc.text_input("Description", value=item["item"], key=f"d{i}",
+                                 label_visibility="collapsed", placeholder="Engine repair")
+        amt = c_amt.number_input("Amount", value=float(item["amount"]), min_value=0.0,
+                                 step=10.0, key=f"a{i}", label_visibility="collapsed")
+        if c_rm.button("Remove", key=f"r{i}") and len(items) > 1:
+            items.pop(i)
+            st.rerun()
+        items[i] = {"item": desc, "amount": amt}
+    if st.button("Add item"):
+        items.append({"item": "", "amount": 0.0})
+        st.rerun()
+
+    total = sum(it["amount"] for it in items if it["item"])
+    st.markdown(f"**Total:** ${total:,.2f}")
+
+    if st.button("Process claim", type="primary"):
+        if not (claim_id and policy_holder and vendor_name):
+            st.error("Fill in all required fields.")
+            return
+        if total <= 0:
+            st.error("Claim total must be greater than zero.")
+            return
+        claim = {
+            "claim_id": claim_id,
+            "policy_holder": policy_holder,
+            "vendor_name": vendor_name,
+            "policy_number": policy_number or None,
+            "invoice_items": [it for it in items if it["item"]],
+            "total_amount": total,
         }
-        
-        # Run through LangGraph
-        logger.info("🎯 Invoking LangGraph workflow...")
-        final_state = claims_graph.invoke(initial_state)
-        
-        logger.info(f"✅ Workflow completed. Final decision: {final_state.get('final_decision', 'N/A')}")
-        logger.info(f"=" * 80)
-        
-        return final_state
-    
-    except Exception as e:
-        logger.error(f"❌ Error processing claim: {e}")
-        logger.error(f"=" * 80)
-        raise e
+        with st.spinner("Processing claim"):
+            try:
+                show_result(process_claim(claim))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Processing failed: {e}")
+                render_logs()
+
+
+def upload_tab():
+    uploaded = st.file_uploader("Claim JSON file", type=["json"])
+    if not uploaded:
+        return
+    try:
+        claim = json.load(uploaded)
+    except json.JSONDecodeError:
+        st.error("That file is not valid JSON.")
+        return
+    st.json(claim)
+    if st.button("Process uploaded claim", type="primary"):
+        with st.spinner("Processing claim"):
+            try:
+                show_result(process_claim(claim))
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Processing failed: {e}")
+                render_logs()
+
+
+def logs_tab():
+    log_dir = Path("logs")
+    if not log_dir.exists() or not any(log_dir.iterdir()):
+        st.info("No log files yet. Process a claim to generate one.")
+        return
+    files = sorted(p.name for p in log_dir.iterdir() if p.is_file())
+    selected = st.selectbox("Log file", files)
+    content = (log_dir / selected).read_text(encoding="utf-8")
+    st.download_button("Download", content, file_name=selected, mime="text/plain")
+    st.code(content, language="log")
+
+
+def sidebar():
+    with st.sidebar:
+        st.subheader("About")
+        st.write(
+            "Adjudicates auto-insurance claims against policy documents using a "
+            "LangGraph workflow with retrieval-augmented policy lookup."
+        )
+        st.subheader("Status")
+        ready = st.session_state.get("vector_store_ready")
+        rows = {
+            "Model": config.model_name,
+            "Policy index": "Ready" if ready else "Not loaded",
+            "API key": "Configured" if config.is_api_key_configured() else "Missing",
+        }
+        for key, val in rows.items():
+            st.markdown(
+                f'<div class="meta-row"><span class="meta-key">{key}</span>'
+                f'<span class="meta-val">{val}</span></div>',
+                unsafe_allow_html=True,
+            )
 
 
 def main():
-    """Main Streamlit application"""
-    
-    # Header
-    st.markdown('<div class="main-header">🏥 Insurance Claims Processing Agent</div>', unsafe_allow_html=True)
-    st.markdown("---")
-    
-    # Initialize vector store
+    st.set_page_config(page_title="Claims Processing Agent", layout="centered")
+    _inject_css()
+    _attach_log_handler()
+
+    st.markdown('<p class="app-title">Insurance Claims Processing Agent</p>',
+                unsafe_allow_html=True)
+    st.markdown('<p class="app-subtitle">Automated adjudication of auto-repair claims '
+                'against policy coverage.</p>', unsafe_allow_html=True)
+    st.markdown('<hr class="app-rule" />', unsafe_allow_html=True)
+
+    sidebar()
+
+    if not config.is_api_key_configured():
+        st.warning(
+            "No OpenAI API key configured. Add OPENAI_API_KEY to your .env file "
+            "(see .env.example) to process claims."
+        )
+        return
+
     initialize_vector_store()
-    
-    # Sidebar
-    with st.sidebar:
-        st.header("ℹ️ About")
-        st.write("""
-        This AI agent automatically processes auto insurance claims using:
-        - **LangGraph** for workflow orchestration
-        - **RAG** for policy retrieval
-        - **GPT-4o-mini** for intelligent decision making
-        """)
-        
-        st.header("📊 System Status")
-        st.metric("Vector Store", "✅ Active" if st.session_state.get("vector_store_initialized") else "⏳ Loading")
-        st.metric("Model", config.model_name)
-        st.metric("Policy Documents", policy_store.collection.count() if st.session_state.get("vector_store_initialized") else 0)
-        
-        st.markdown("---")
-        st.caption(f"Powered by LangChain & LangGraph")
-    
-    # Main content area
-    tab1, tab2, tab3 = st.tabs(["📝 Manual Entry", "📤 Upload JSON", "📚 Logs Viewer"])
-    
-    # === TAB 1: Manual Entry ===
-    with tab1:
-        st.subheader("Enter Claim Details Manually")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            claim_id = st.text_input("Claim ID *", placeholder="e.g., CLM-2026-001")
-            policy_holder = st.text_input("Policy Holder Name *", placeholder="e.g., John Doe")
-            vendor_name = st.text_input("Vendor/Service Provider *", placeholder="e.g., AutoFix Garage")
-        
-        with col2:
-            total_amount = st.number_input("Total Claim Amount ($) *", min_value=0.0, step=10.0, value=0.0)
-        
-        st.markdown("**Invoice Items**")
-        
-        # Dynamic invoice items
-        if "invoice_items" not in st.session_state:
-            st.session_state.invoice_items = [{"item": "", "amount": 0.0}]
-        
-        for i, item in enumerate(st.session_state.invoice_items):
-            col_item, col_amount, col_remove = st.columns([3, 2, 1])
-            
-            with col_item:
-                item_desc = st.text_input(f"Item Description", value=item["item"], key=f"item_desc_{i}", placeholder="e.g., Engine Repair")
-            
-            with col_amount:
-                item_amount = st.number_input(f"Amount ($)", value=item["amount"], min_value=0.0, step=10.0, key=f"item_amount_{i}")
-            
-            with col_remove:
-                if st.button("❌", key=f"remove_{i}"):
-                    st.session_state.invoice_items.pop(i)
-                    st.rerun()
-            
-            st.session_state.invoice_items[i] = {"item": item_desc, "amount": item_amount}
-        
-        if st.button("➕ Add Another Item"):
-            st.session_state.invoice_items.append({"item": "", "amount": 0.0})
-            st.rerun()
-        
-        st.markdown("---")
-        
-        if st.button("🚀 Process Claim", type="primary", use_container_width=True):
-            # Validate inputs
-            if not claim_id or not policy_holder or not vendor_name:
-                st.error("❌ Please fill in all required fields marked with *")
-                return
-            
-            if total_amount <= 0:
-                st.error("❌ Claim amount must be greater than 0")
-                return
-            
-            # Build claim data
-            claim_data = {
-                "claim_id": claim_id,
-                "policy_holder": policy_holder,
-                "vendor_name": vendor_name,
-                "invoice_items": [item for item in st.session_state.invoice_items if item["item"]],
-                "total_amount": total_amount
-            }
-            
-            # Process claim
-            with st.spinner("🔄 Processing claim through AI agent..."):
-                try:
-                    result = process_claim(claim_data)
-                    
-                    # Display results
-                    st.success("✅ Claim processing completed!")
-                    
-                    # Display logs
-                    display_logs()
-                    
-                    # Decision box
-                    decision = result.get("final_decision", "UNKNOWN")
-                    reasoning = result.get("final_reasoning", "No reasoning provided")
-                    
-                    if decision == "APPROVED":
-                        st.markdown(f'<div class="success-box"><h3>✅ CLAIM APPROVED</h3><p>{reasoning}</p></div>', unsafe_allow_html=True)
-                    elif decision == "DENIED" or decision == "INVALID":
-                        st.markdown(f'<div class="error-box"><h3>❌ CLAIM DENIED</h3><p>{reasoning}</p></div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'<div class="warning-box"><h3>⚠️ REQUIRES MANUAL REVIEW</h3><p>{reasoning}</p></div>', unsafe_allow_html=True)
-                    
-                    # Detailed breakdown
-                    with st.expander("📋 View Detailed Processing Steps"):
-                        st.json({
-                            "claim_id": result.get("claim_id"),
-                            "is_valid": result.get("is_valid"),
-                            "validation_reason": result.get("validation_reason", "Valid"),
-                            "policy_queries_generated": len(result.get("policy_queries", [])),
-                            "recommendation": result.get("recommendation"),
-                            "recommendation_reasoning": result.get("recommendation_reasoning"),
-                            "price_check_result": result.get("price_check_result"),
-                            "final_decision": result.get("final_decision"),
-                            "final_reasoning": result.get("final_reasoning")
-                        })
-                
-                except Exception as e:
-                    st.error(f"❌ Error processing claim: {str(e)}")
-                    logger.error(f"Claim processing error: {e}")
-                    display_logs()
-    
-    # === TAB 2: Upload JSON ===
-    with tab2:
-        st.subheader("Upload Claim JSON File")
-        
-        uploaded_file = st.file_uploader("Choose a JSON file", type=["json"])
-        
-        if uploaded_file is not None:
-            try:
-                claim_data = json.load(uploaded_file)
-                
-                st.success("✅ File uploaded successfully!")
-                st.json(claim_data)
-                
-                if st.button("🚀 Process Uploaded Claim", type="primary", use_container_width=True):
-                    with st.spinner("🔄 Processing claim..."):
-                        try:
-                            result = process_claim(claim_data)
-                            
-                            st.success("✅ Claim processing completed!")
-                            
-                            # Display logs
-                            display_logs()
-                            
-                            decision = result.get("final_decision", "UNKNOWN")
-                            reasoning = result.get("final_reasoning", "No reasoning provided")
-                            
-                            if decision == "APPROVED":
-                                st.markdown(f'<div class="success-box"><h3>✅ CLAIM APPROVED</h3><p>{reasoning}</p></div>', unsafe_allow_html=True)
-                            elif decision == "DENIED" or decision == "INVALID":
-                                st.markdown(f'<div class="error-box"><h3>❌ CLAIM DENIED</h3><p>{reasoning}</p></div>', unsafe_allow_html=True)
-                            else:
-                                st.markdown(f'<div class="warning-box"><h3>⚠️ REQUIRES MANUAL REVIEW</h3><p>{reasoning}</p></div>', unsafe_allow_html=True)
-                            
-                            with st.expander("📋 View Detailed Processing Steps"):
-                                st.json(result)
-                        
-                        except Exception as e:
-                            st.error(f"❌ Error processing claim: {str(e)}")
-                            display_logs()
-            
-            except json.JSONDecodeError:
-                st.error("❌ Invalid JSON file. Please upload a valid JSON file.")
-    
-    # === TAB 3: Logs Viewer ===
-    with tab3:
-        st.subheader("Logs Viewer")
 
-        # List files from ./logs directory
-        from pathlib import Path as _Path
-        log_dir = _Path("logs")
-
-        if not log_dir.exists():
-            st.info("No `logs` directory found in the workspace.")
-        else:
-            files = sorted([p.name for p in log_dir.iterdir() if p.is_file()])
-            if not files:
-                st.info("No log files found in `./logs/`.")
-            else:
-                selected = st.selectbox("Select log file", files)
-
-                # Read and display the selected file
-                file_path = log_dir / selected
-                try:
-                    with open(file_path, "r", encoding="utf-8") as fh:
-                        content = fh.read()
-                except Exception as e:
-                    st.error(f"Error reading log file: {e}")
-                    content = ""
-
-                if content:
-                    st.download_button("Download Log File", data=content, file_name=selected, mime="text/plain")
-                    st.markdown("### Log Contents")
-                    st.code(content, language="log")
+    tab_new, tab_upload, tab_logs = st.tabs(["New claim", "Upload JSON", "Logs"])
+    with tab_new:
+        claim_form()
+    with tab_upload:
+        upload_tab()
+    with tab_logs:
+        logs_tab()
 
 
 if __name__ == "__main__":
