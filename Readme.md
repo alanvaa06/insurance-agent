@@ -13,10 +13,13 @@ they are predictable, free, and unit-testable; only the two genuinely semantic
 steps call the LLM.
 
 ```
-parse -> validate --valid--> coverage_check -> generate_queries (LLM)
+parse -> validate --valid--> coverage_check --covered--> generate_queries (LLM)
       -> retrieve_policy (RAG) -> recommend (LLM) -> price_check -> finalize -> decision
-                \--invalid--> Invalid
+                \--invalid--> Invalid          \--not covered--> finalize (Denied)
 ```
+
+Claims with no active coverage are denied without spending LLM calls. Every
+finalized decision is appended to `logs/decisions.jsonl` as an audit record.
 
 | Step | Type | What it does |
 |------|------|--------------|

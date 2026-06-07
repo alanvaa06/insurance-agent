@@ -13,7 +13,7 @@ from typing import Literal
 
 from langgraph.graph import END, StateGraph
 
-from app.agent.coverage import check_coverage
+from app.agent.coverage import NOT_COVERED, check_coverage
 from app.agent.state import ClaimState
 from app.agent.tools import (
     INVALID,
@@ -24,6 +24,7 @@ from app.agent.tools import (
     retrieve_policy_text,
     validate_claim,
 )
+from app.utils.audit import record_decision
 from app.utils.config import config
 from app.utils.logger import logger
 
@@ -135,6 +136,7 @@ def finalize_decision_node(state: ClaimState) -> ClaimState:
     state["final_decision"] = result.get("final_decision")
     state["final_reasoning"] = result.get("final_reasoning")
     state["current_step"] = "completed"
+    record_decision(state)
     return state
 
 
@@ -143,6 +145,7 @@ def invalid_claim_node(state: ClaimState) -> ClaimState:
     state["final_decision"] = INVALID
     state["final_reasoning"] = state.get("validation_reason", "Claim failed validation.")
     state["current_step"] = "completed"
+    record_decision(state)
     return state
 
 
@@ -150,6 +153,12 @@ def invalid_claim_node(state: ClaimState) -> ClaimState:
 
 def should_continue_after_validation(state: ClaimState) -> Literal["continue", "invalid"]:
     return "continue" if state.get("is_valid") else "invalid"
+
+
+def route_after_coverage(state: ClaimState) -> Literal["denied", "continue"]:
+    # A claim with no active coverage is denied without spending LLM calls on
+    # policy retrieval and a recommendation.
+    return "denied" if state.get("coverage_status") == NOT_COVERED else "continue"
 
 
 # === BUILD ===
@@ -176,7 +185,11 @@ def create_claims_processing_graph():
         should_continue_after_validation,
         {"continue": "coverage_check", "invalid": "invalid_claim"},
     )
-    workflow.add_edge("coverage_check", "generate_queries")
+    workflow.add_conditional_edges(
+        "coverage_check",
+        route_after_coverage,
+        {"continue": "generate_queries", "denied": "finalize_decision"},
+    )
     workflow.add_edge("generate_queries", "retrieve_policy")
     workflow.add_edge("retrieve_policy", "recommend")
     workflow.add_edge("recommend", "price_check")

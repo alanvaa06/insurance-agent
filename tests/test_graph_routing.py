@@ -84,3 +84,25 @@ def test_t5_policy_limit_requires_review(monkeypatch):
 def test_all_expected_results(monkeypatch, case_file, decision, expected):
     state = run_case(monkeypatch, case_file, decision)
     assert state["final_decision"] == expected
+
+
+def test_not_covered_short_circuits_without_llm(monkeypatch):
+    # A claim on a policy with outstanding dues (PN-3) is denied without ever
+    # invoking the LLM.
+    fake_llm = FakeLLM([])  # empty: any LLM call would surface as wrong output
+    monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake_llm)
+    monkeypatch.setattr(tools, "get_policy_store", lambda: FakeStore("unused"))
+
+    graph = create_claims_processing_graph()
+    claim = {
+        "claim_id": "CLM-NC-1",
+        "policy_holder": "Jane Doe",
+        "vendor_name": "Garage",
+        "policy_number": "PN-3",  # premium_dues_remaining = True
+        "date_of_loss": "2021-07-01",
+        "total_amount": 500.0,
+    }
+    state = graph.invoke({"claim_json": json.dumps(claim), "current_step": "init"})
+    assert state["final_decision"] == "DENIED"
+    assert state["coverage_status"] == "NOT_COVERED"
+    assert fake_llm.prompts == []  # no LLM calls were made
