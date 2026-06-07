@@ -1,5 +1,5 @@
 """State schema for the LangGraph workflow."""
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,36 +11,36 @@ class ClaimState(TypedDict, total=False):
     claim_json: str
 
     # Parsed claim data
-    claim_id: Optional[str]
-    invoice_items: Optional[List[Dict[str, Any]]]
-    vendor_name: Optional[str]
-    claim_amount: Optional[float]
-    policy_holder: Optional[str]
-    policy_number: Optional[str]
-    date_of_loss: Optional[str]
+    claim_id: str | None
+    invoice_items: list[dict[str, Any]] | None
+    vendor_name: str | None
+    claim_amount: float | None
+    policy_holder: str | None
+    policy_number: str | None
+    date_of_loss: str | None
 
     # Validation
-    is_valid: Optional[bool]
-    validation_reason: Optional[str]
+    is_valid: bool | None
+    validation_reason: str | None
 
     # Coverage
-    coverage_status: Optional[str]
-    coverage_reason: Optional[str]
+    coverage_status: str | None
+    coverage_reason: str | None
 
     # Policy retrieval
-    policy_queries: Optional[List[str]]
-    retrieved_policy_text: Optional[str]
+    policy_queries: list[str] | None
+    retrieved_policy_text: str | None
 
     # Recommendation
-    recommendation: Optional[str]
-    recommendation_reasoning: Optional[str]
+    recommendation: str | None
+    recommendation_reasoning: str | None
 
     # Price check
-    price_check_result: Optional[str]
+    price_check_result: str | None
 
     # Final decision
-    final_decision: Optional[str]
-    final_reasoning: Optional[str]
+    final_decision: str | None
+    final_reasoning: str | None
 
     # Flow control / logging
     current_step: str
@@ -67,5 +67,5 @@ class ClaimInput(BaseModel):
     claim_id: str = Field(..., description="Unique claim identifier")
     policy_holder: str = Field(..., description="Name of policy holder")
     vendor_name: str = Field(..., description="Service provider name")
-    invoice_items: List[Dict[str, Any]] = Field(..., description="List of claimed items")
+    invoice_items: list[dict[str, Any]] = Field(..., description="List of claimed items")
     total_amount: float = Field(..., description="Total claim amount")

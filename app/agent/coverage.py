@@ -8,7 +8,7 @@ own (they are surfaced for the adjudicator instead).
 import csv
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.utils.config import config
 from app.utils.logger import logger
@@ -23,7 +23,7 @@ NOT_COVERED = "NOT_COVERED"
 UNKNOWN = "UNKNOWN"
 
 
-def _get_first(data: Dict[str, Any], keys) -> Optional[Any]:
+def _get_first(data: dict[str, Any], keys) -> Any | None:
     for key in keys:
         if key in data and data[key] not in (None, ""):
             return data[key]
@@ -34,7 +34,7 @@ def _parse_bool(value: Any) -> bool:
     return str(value).strip().lower() in ("true", "1", "yes", "y")
 
 
-def _parse_date(value: Any) -> Optional[date]:
+def _parse_date(value: Any) -> date | None:
     if not value:
         return None
     text = str(value).strip()
@@ -46,28 +46,35 @@ def _parse_date(value: Any) -> Optional[date]:
     return None
 
 
-def load_coverage_table(csv_path: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+def load_coverage_table(csv_path: str | None = None) -> dict[str, dict[str, Any]]:
     """Load the coverage CSV into a dict keyed by policy_number."""
     path = Path(csv_path or config.coverage_csv_path)
-    table: Dict[str, Dict[str, Any]] = {}
+    table: dict[str, dict[str, Any]] = {}
     if not path.exists():
         logger.warning(f"Coverage CSV not found: {path}")
         return table
 
-    with open(path, newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            policy = (row.get("policy_number") or "").strip()
-            if policy:
-                table[policy] = row
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            for i, row in enumerate(csv.DictReader(fh), 1):
+                try:
+                    policy = (row.get("policy_number") or "").strip()
+                    if policy:
+                        table[policy] = row
+                except (AttributeError, TypeError) as e:
+                    logger.warning(f"Skipped malformed coverage row {i}: {e}")
+    except OSError as e:
+        logger.error(f"Could not read coverage CSV {path}: {e}")
+        return {}
     logger.info(f"Loaded {len(table)} policies from coverage table")
     return table
 
 
 def check_coverage(
-    claim_data: Dict[str, Any],
-    csv_path: Optional[str] = None,
-    today: Optional[date] = None,
-) -> Dict[str, Any]:
+    claim_data: dict[str, Any],
+    csv_path: str | None = None,
+    today: date | None = None,
+) -> dict[str, Any]:
     """Check a claim's policy against the coverage table.
 
     Returns ``{"status", "reason", "policy_number"}`` where status is one of

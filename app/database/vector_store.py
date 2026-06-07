@@ -4,13 +4,29 @@ The store is created lazily via ``get_policy_store()`` rather than at import
 time, so importing the agent does not require an API key or a ChromaDB on disk
 (important for tests and for clean failure messages).
 """
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pypdf import PdfReader
 
 from app.utils.config import config
 from app.utils.logger import logger
+
+
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+    """Split text into overlapping chunks, dropping fragments under 50 chars.
+
+    Pure and module-level so it is unit-testable without a ChromaDB client.
+    """
+    if chunk_size <= overlap:
+        raise ValueError("chunk_size must be greater than overlap")
+    chunks = []
+    for i in range(0, len(text), chunk_size - overlap):
+        chunk = text[i : i + chunk_size].strip()
+        if len(chunk) > 50:
+            chunks.append(chunk)
+    return chunks
 
 
 class PolicyVectorStore:
@@ -46,33 +62,28 @@ class PolicyVectorStore:
             f"({self.collection.count()} docs)"
         )
 
-    def load_pdf_policy(self, pdf_path: str) -> List[Dict[str, Any]]:
+    def load_pdf_policy(self, pdf_path: str) -> list[dict[str, Any]]:
         """Extract overlapping text chunks from the policy PDF."""
         logger.info(f"Loading policy PDF: {pdf_path}")
         if not Path(pdf_path).exists():
             logger.error(f"Policy PDF not found: {pdf_path}")
             return []
 
-        chunks: List[Dict[str, Any]] = []
-        chunk_size, overlap = 500, 50
+        chunks: list[dict[str, Any]] = []
         try:
             reader = PdfReader(pdf_path)
             logger.info(f"PDF has {len(reader.pages)} pages")
             for page_num, page in enumerate(reader.pages, 1):
                 text = page.extract_text() or ""
-                for i in range(0, len(text), chunk_size - overlap):
-                    chunk = text[i : i + chunk_size].strip()
-                    if len(chunk) > 50:
-                        chunks.append(
-                            {"text": chunk, "page": page_num, "source": pdf_path}
-                        )
+                for chunk in chunk_text(text):
+                    chunks.append({"text": chunk, "page": page_num, "source": pdf_path})
             logger.info(f"Extracted {len(chunks)} chunks from PDF")
             return chunks
         except Exception as e:
             logger.error(f"Error loading PDF: {e}")
             return []
 
-    def populate_from_pdf(self, pdf_path: Optional[str] = None) -> None:
+    def populate_from_pdf(self, pdf_path: str | None = None) -> None:
         """Load the policy PDF into the vector store if not already populated."""
         pdf_path = pdf_path or config.policy_pdf_path
         if self.collection.count() > 0:
@@ -102,12 +113,19 @@ class PolicyVectorStore:
         return "\n\n".join(docs[0])
 
 
-_policy_store: Optional[PolicyVectorStore] = None
+_policy_store: PolicyVectorStore | None = None
+_policy_store_lock = threading.Lock()
 
 
 def get_policy_store() -> PolicyVectorStore:
-    """Return a lazily-created, process-wide PolicyVectorStore singleton."""
+    """Return a lazily-created, process-wide PolicyVectorStore singleton.
+
+    Double-checked locking avoids two concurrent Streamlit sessions each
+    building a ChromaDB client.
+    """
     global _policy_store
     if _policy_store is None:
-        _policy_store = PolicyVectorStore()
+        with _policy_store_lock:
+            if _policy_store is None:
+                _policy_store = PolicyVectorStore()
     return _policy_store

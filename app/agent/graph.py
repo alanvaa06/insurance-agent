@@ -8,6 +8,7 @@ Flow:
 Mechanical nodes are deterministic; only query generation and the
 recommendation call the LLM (see app.agent.tools).
 """
+import threading
 from typing import Literal
 
 from langgraph.graph import END, StateGraph
@@ -25,7 +26,6 @@ from app.agent.tools import (
 )
 from app.utils.config import config
 from app.utils.logger import logger
-
 
 # === NODES ===
 
@@ -190,11 +190,14 @@ def create_claims_processing_graph():
 
 
 _claims_graph = None
+_claims_graph_lock = threading.Lock()
 
 
 def get_claims_graph():
-    """Return a lazily-compiled, process-wide claims graph."""
+    """Return a lazily-compiled, process-wide claims graph (thread-safe)."""
     global _claims_graph
     if _claims_graph is None:
-        _claims_graph = create_claims_processing_graph()
+        with _claims_graph_lock:
+            if _claims_graph is None:
+                _claims_graph = create_claims_processing_graph()
     return _claims_graph

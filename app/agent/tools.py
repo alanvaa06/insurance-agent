@@ -7,7 +7,7 @@ recommendation -- call the LLM. The LLM is injected so tests can supply a fake.
 """
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.agent.llm import get_llm
 from app.agent.prompts import (
@@ -75,7 +75,7 @@ def extract_json(text: str) -> Any:
     raise ValueError(f"Could not extract JSON from: {text[:200]}")
 
 
-def _first(data: Dict[str, Any], keys) -> Optional[Any]:
+def _first(data: dict[str, Any], keys) -> Any | None:
     for key in keys:
         if key in data and data[key] not in (None, ""):
             return data[key]
@@ -95,7 +95,7 @@ def _coerce_amount(value: Any) -> float:
         return 0.0
 
 
-def parse_claim(claim_json: str) -> Dict[str, Any]:
+def parse_claim(claim_json: str) -> dict[str, Any]:
     """Parse a claim JSON string into a normalized dict.
 
     Deterministic -- no LLM. Maps the several field-name variants used across
@@ -126,7 +126,7 @@ def parse_claim(claim_json: str) -> Dict[str, Any]:
     return parsed
 
 
-def validate_claim(claim_data: Dict[str, Any]) -> Dict[str, Any]:
+def validate_claim(claim_data: dict[str, Any]) -> dict[str, Any]:
     """Validate required fields. Deterministic -- no LLM.
 
     Valid when: claim_id, policy_holder and vendor_name are non-empty and the
@@ -161,7 +161,15 @@ def _nonempty(value: Any) -> bool:
     return value is not None and str(value).strip() != ""
 
 
-def generate_policy_queries(claim_data: Dict[str, Any], llm=None) -> List[str]:
+def _fallback_queries(claim_data: dict[str, Any]) -> list[str]:
+    """Generic queries so retrieval still runs when the LLM output is unusable."""
+    return [
+        f"coverage for {claim_data.get('vendor_name', 'repairs')}",
+        "claim amount limits and exclusions",
+    ]
+
+
+def generate_policy_queries(claim_data: dict[str, Any], llm=None) -> list[str]:
     """Generate 2-3 policy search queries (LLM)."""
     logger.info("TOOL generate_policy_queries")
     llm = llm or get_llm()
@@ -175,21 +183,25 @@ def generate_policy_queries(claim_data: Dict[str, Any], llm=None) -> List[str]:
         queries = extract_json(response.content)
         if isinstance(queries, dict):
             queries = queries.get("queries", [])
+        if not isinstance(queries, list):
+            logger.warning(f"Unexpected query payload type: {type(queries).__name__}")
+            return _fallback_queries(claim_data)
         queries = [str(q) for q in queries if str(q).strip()]
+        if not queries:
+            return _fallback_queries(claim_data)
         logger.info(f"generate_policy_queries: produced {len(queries)} queries")
         return queries
     except Exception as e:
         logger.error(f"generate_policy_queries failed: {e}")
-        # Fall back to a sensible default query so retrieval still runs.
-        return [
-            f"coverage for {claim_data.get('vendor_name', 'repairs')}",
-            "claim amount limits and exclusions",
-        ]
+        return _fallback_queries(claim_data)
 
 
-def retrieve_policy_text(queries: List[str], store=None) -> str:
+def retrieve_policy_text(queries: list[str], store=None) -> str:
     """Retrieve and concatenate relevant policy passages from the vector store."""
     logger.info("TOOL retrieve_policy_text")
+    if not queries:
+        logger.warning("No queries provided to retrieve_policy_text")
+        return ""
     store = store or get_policy_store()
     results = []
     for query in queries:
@@ -202,8 +214,8 @@ def retrieve_policy_text(queries: List[str], store=None) -> str:
 
 
 def generate_recommendation(
-    claim_data: Dict[str, Any], policy_text: str, llm=None
-) -> Dict[str, Any]:
+    claim_data: dict[str, Any], policy_text: str, llm=None
+) -> dict[str, Any]:
     """Recommend APPROVE / DENY grounded in retrieved policy text (LLM)."""
     logger.info("TOOL generate_recommendation")
     llm = llm or get_llm()
@@ -217,6 +229,12 @@ def generate_recommendation(
         )
         response = llm.invoke(prompt)
         recommendation = extract_json(response.content)
+        if not isinstance(recommendation, dict):
+            logger.warning("Recommendation payload was not an object; routing to review.")
+            return {
+                "recommendation": "REVIEW",
+                "reasoning": "Model returned an unexpected format; routed for manual review.",
+            }
         decision = str(recommendation.get("recommendation", "")).upper()
         if decision not in ("APPROVE", "DENY"):
             # Ambiguous model output: send to a human rather than guess. Denying
@@ -246,9 +264,9 @@ def finalize_decision(
     recommendation: str,
     recommendation_reasoning: str,
     price_check_result: str,
-    coverage_status: Optional[str] = None,
+    coverage_status: str | None = None,
     coverage_reason: str = "",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Combine signals into a final decision. Deterministic -- no LLM.
 
     Rules (in order):

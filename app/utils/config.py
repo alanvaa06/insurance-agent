@@ -1,7 +1,9 @@
 """Configuration management for the Insurance Claims Agent."""
 import json
 import os
+import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,11 +14,14 @@ class Config:
 
     def __init__(self):
         config_path = Path("config.json")
+        self.config_data = {}
         if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                self.config_data = json.load(f)
-        else:
-            self.config_data = {}
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    self.config_data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                # A malformed optional config file must not crash startup.
+                print(f"Warning: ignoring invalid config.json: {e}", file=sys.stderr)
 
     # --- API ---
     @property

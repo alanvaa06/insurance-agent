@@ -49,3 +49,23 @@ def test_retrieve_policy_text_joins_results():
     text = retrieve_policy_text(["q1", "q2"], store=store)
     assert "chunk text" in text
     assert store.queries == ["q1", "q2"]
+
+
+def test_retrieve_policy_text_empty_queries_returns_empty():
+    # Must not call the store (or crash) when there are no queries.
+    store = FakeStore("unused")
+    assert retrieve_policy_text([], store=store) == ""
+    assert store.queries == []
+
+
+def test_recommendation_non_dict_payload_routes_to_review():
+    # A JSON array payload must not crash on .get(); route to review.
+    llm = FakeLLM(['["APPROVE", "reason"]'])
+    result = generate_recommendation({"claim_id": "C1"}, "policy", llm=llm)
+    assert result["recommendation"] == "REVIEW"
+
+
+def test_generate_queries_primitive_payload_falls_back():
+    llm = FakeLLM(["42"])
+    queries = generate_policy_queries({"vendor_name": "X"}, llm=llm)
+    assert len(queries) >= 1

@@ -34,3 +34,22 @@ def test_loss_outside_window_not_covered():
 def test_unknown_policy_number():
     result = check_coverage({"policy_number": "PN-DOES-NOT-EXIST"})
     assert result["status"] == UNKNOWN
+
+
+def test_missing_csv_returns_unknown(tmp_path):
+    missing = tmp_path / "nope.csv"
+    result = check_coverage({"policy_number": "PN-2"}, csv_path=str(missing))
+    assert result["status"] == UNKNOWN
+
+
+def test_custom_csv_is_read(tmp_path):
+    csv_file = tmp_path / "cov.csv"
+    csv_file.write_text(
+        "policy_number,premium_dues_remaining,coverage_start_date,coverage_end_date\n"
+        "X-1,False,2020-01-01,2030-01-01\n",
+        encoding="utf-8",
+    )
+    result = check_coverage(
+        {"policy_number": "X-1", "date_of_loss": "2025-01-01"}, csv_path=str(csv_file)
+    )
+    assert result["status"] == COVERED

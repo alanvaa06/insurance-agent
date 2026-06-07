@@ -187,16 +187,20 @@ def claim_form():
 
     st.write("Invoice items")
     items = st.session_state.setdefault("invoice_items", [{"item": "", "amount": 0.0}])
+    remove_index = None
     for i, item in enumerate(items):
         c_desc, c_amt, c_rm = st.columns([3, 1.4, 0.5])
         desc = c_desc.text_input("Description", value=item["item"], key=f"d{i}",
                                  label_visibility="collapsed", placeholder="Engine repair")
         amt = c_amt.number_input("Amount", value=float(item["amount"]), min_value=0.0,
                                  step=10.0, key=f"a{i}", label_visibility="collapsed")
-        if c_rm.button("Remove", key=f"r{i}") and len(items) > 1:
-            items.pop(i)
-            st.rerun()
         items[i] = {"item": desc, "amount": amt}
+        if c_rm.button("Remove", key=f"r{i}", disabled=len(items) == 1):
+            remove_index = i
+    # Mutate after the loop to avoid skipping items / stale widget keys.
+    if remove_index is not None:
+        items.pop(remove_index)
+        st.rerun()
     if st.button("Add item"):
         items.append({"item": "", "amount": 0.0})
         st.rerun()
