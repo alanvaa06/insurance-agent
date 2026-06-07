@@ -156,6 +156,9 @@ def process_claim(claim_data: dict) -> dict:
 
 
 def show_result(result: dict):
+    claim_id = result.get("claim_id") or "N/A"
+    amount = result.get("claim_amount") or 0.0
+    st.caption(f"Claim {claim_id} · ${amount:,.2f}")
     render_decision(result.get("final_decision", "UNKNOWN"), result.get("final_reasoning", ""))
     render_logs()
     with st.expander("Processing detail"):
@@ -187,6 +190,9 @@ def claim_form():
 
     st.write("Invoice items")
     items = st.session_state.setdefault("invoice_items", [{"item": "", "amount": 0.0}])
+    h_desc, h_amt, _ = st.columns([3, 1.4, 0.5])
+    h_desc.caption("Description")
+    h_amt.caption("Amount (USD)")
     remove_index = None
     for i, item in enumerate(items):
         c_desc, c_amt, c_rm = st.columns([3, 1.4, 0.5])
@@ -205,7 +211,9 @@ def claim_form():
         items.append({"item": "", "amount": 0.0})
         st.rerun()
 
-    total = sum(it["amount"] for it in items if it["item"])
+    # Total reflects every amount entered, not only rows that also have a label,
+    # so a typed amount never silently reads as zero.
+    total = sum(float(it["amount"]) for it in items)
     st.markdown(f"**Total:** ${total:,.2f}")
 
     if st.button("Process claim", type="primary"):
@@ -213,14 +221,14 @@ def claim_form():
             st.error("Fill in all required fields.")
             return
         if total <= 0:
-            st.error("Claim total must be greater than zero.")
+            st.error("Add at least one invoice item with an amount greater than zero.")
             return
         claim = {
             "claim_id": claim_id,
             "policy_holder": policy_holder,
             "vendor_name": vendor_name,
             "policy_number": policy_number or None,
-            "invoice_items": [it for it in items if it["item"]],
+            "invoice_items": [it for it in items if it["item"] or it["amount"] > 0],
             "total_amount": total,
         }
         with st.spinner("Processing claim"):
