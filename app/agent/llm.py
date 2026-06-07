@@ -29,4 +29,6 @@ def get_llm(temperature: float = 0):
         api_key=config.openai_api_key,
         base_url=config.openai_base_url,
         temperature=temperature,
+        timeout=config.llm_timeout_seconds,
+        max_retries=config.llm_max_retries,
     )

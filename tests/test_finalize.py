@@ -27,3 +27,13 @@ def test_not_covered_forces_denied_over_everything():
     )
     assert result["final_decision"] == DENIED
     assert result["final_reasoning"] == "dues outstanding"
+
+
+def test_review_recommendation_routes_to_review():
+    result = finalize_decision("REVIEW", "model unavailable", "WITHIN_NORMAL_RANGE")
+    assert result["final_decision"] == REQUIRES_REVIEW
+
+
+def test_unknown_recommendation_never_silently_approves():
+    result = finalize_decision("???", "garbage", "WITHIN_NORMAL_RANGE")
+    assert result["final_decision"] == REQUIRES_REVIEW

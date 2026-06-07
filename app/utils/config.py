@@ -65,6 +65,20 @@ class Config:
         except ValueError:
             return 10000.0
 
+    @property
+    def llm_timeout_seconds(self) -> float:
+        try:
+            return float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
+        except ValueError:
+            return 30.0
+
+    @property
+    def llm_max_retries(self) -> int:
+        try:
+            return int(os.getenv("LLM_MAX_RETRIES", "2"))
+        except ValueError:
+            return 2
+
     # --- Helpers ---
     def is_api_key_configured(self) -> bool:
         """True if an OpenAI API key is present. Lets callers fail clearly."""

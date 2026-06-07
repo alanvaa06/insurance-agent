@@ -30,16 +30,18 @@ def test_recommendation_normalizes_decision():
     assert result["recommendation"] == "APPROVE"
 
 
-def test_recommendation_unknown_decision_fails_safe_to_deny():
+def test_recommendation_ambiguous_routes_to_review():
+    # Ambiguous model output should go to a human, not auto-deny/approve.
     llm = FakeLLM(['{"recommendation": "maybe", "reasoning": "unsure"}'])
     result = generate_recommendation({"claim_id": "C1"}, "policy", llm=llm)
-    assert result["recommendation"] == "DENY"
+    assert result["recommendation"] == "REVIEW"
 
 
-def test_recommendation_exception_fails_safe():
+def test_recommendation_system_error_routes_to_review():
+    # A system error must not auto-deny the claimant.
     llm = FakeLLM(["totally not json and no braces"])
     result = generate_recommendation({"claim_id": "C1"}, "policy", llm=llm)
-    assert result["recommendation"] == "DENY"
+    assert result["recommendation"] == "REVIEW"
 
 
 def test_retrieve_policy_text_joins_results():

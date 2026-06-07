@@ -1,4 +1,5 @@
 """Streamlit interface for the Insurance Claims Processing Agent."""
+import html
 import json
 import logging
 import sys
@@ -90,20 +91,26 @@ def _inject_css():
     )
 
 
-def render_decision(decision: str, reasoning: str):
+def decision_html(decision: str, reasoning: str) -> str:
+    """Build the decision panel HTML.
+
+    Pure (no Streamlit) so the escaping is unit-testable. ``reasoning`` is
+    LLM-generated and the label may fall back to raw model output, so neither is
+    trusted in an HTML context.
+    """
     label, tone = DECISION_STYLES.get(decision, (decision or "Unknown", "warn"))
-    st.markdown(
-        f"""
-        <div class="decision {tone}">
-          <div class="decision-head">
-            <span class="decision-dot"></span>
-            <span class="decision-label">{label}</span>
-          </div>
-          <p class="decision-reason">{reasoning or "No reasoning provided."}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    safe_label = html.escape(str(label))
+    safe_reason = html.escape(str(reasoning) if reasoning else "No reasoning provided.")
+    return (
+        f'<div class="decision {tone}">'
+        f'<div class="decision-head"><span class="decision-dot"></span>'
+        f'<span class="decision-label">{safe_label}</span></div>'
+        f'<p class="decision-reason">{safe_reason}</p></div>'
     )
+
+
+def render_decision(decision: str, reasoning: str):
+    st.markdown(decision_html(decision, reasoning), unsafe_allow_html=True)
 
 
 def render_logs():
@@ -267,8 +274,8 @@ def sidebar():
         }
         for key, val in rows.items():
             st.markdown(
-                f'<div class="meta-row"><span class="meta-key">{key}</span>'
-                f'<span class="meta-val">{val}</span></div>',
+                f'<div class="meta-row"><span class="meta-key">{html.escape(key)}</span>'
+                f'<span class="meta-val">{html.escape(str(val))}</span></div>',
                 unsafe_allow_html=True,
             )
 

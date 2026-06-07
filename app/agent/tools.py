@@ -219,15 +219,19 @@ def generate_recommendation(
         recommendation = extract_json(response.content)
         decision = str(recommendation.get("recommendation", "")).upper()
         if decision not in ("APPROVE", "DENY"):
-            decision = "DENY"  # Fail safe: do not auto-approve on ambiguity.
+            # Ambiguous model output: send to a human rather than guess. Denying
+            # outright would risk a wrongful denial.
+            decision = "REVIEW"
         recommendation["recommendation"] = decision
         logger.info(f"generate_recommendation: {decision}")
         return recommendation
     except Exception as e:
         logger.error(f"generate_recommendation failed: {e}")
+        # A system error (outage, rate limit, bad key) must not auto-deny a
+        # claimant. Route to manual review instead.
         return {
-            "recommendation": "DENY",
-            "reasoning": f"Could not evaluate against policy ({e}); routed for review.",
+            "recommendation": "REVIEW",
+            "reasoning": f"Automated evaluation unavailable ({e}); routed for manual review.",
         }
 
 
@@ -251,7 +255,8 @@ def finalize_decision(
       1. Coverage explicitly NOT_COVERED  -> DENIED
       2. Price flagged as high amount     -> REQUIRES_REVIEW
       3. Recommendation DENY              -> DENIED
-      4. Otherwise                        -> APPROVED
+      4. Recommendation APPROVE           -> APPROVED
+      5. Anything else (REVIEW/unknown)   -> REQUIRES_REVIEW
     """
     logger.info("TOOL finalize_decision")
     rec = str(recommendation or "").upper()
@@ -271,4 +276,8 @@ def finalize_decision(
     if rec == "DENY":
         return {"final_decision": DENIED, "final_reasoning": recommendation_reasoning}
 
-    return {"final_decision": APPROVED, "final_reasoning": recommendation_reasoning}
+    if rec == "APPROVE":
+        return {"final_decision": APPROVED, "final_reasoning": recommendation_reasoning}
+
+    # Ambiguous or unavailable recommendation: never silently approve.
+    return {"final_decision": REQUIRES_REVIEW, "final_reasoning": recommendation_reasoning}
