@@ -241,6 +241,8 @@ def generate_recommendation(
             # outright would risk a wrongful denial.
             decision = "REVIEW"
         recommendation["recommendation"] = decision
+        if not recommendation.get("reasoning"):
+            recommendation["reasoning"] = "(No reasoning provided by model.)"
         logger.info(f"generate_recommendation: {decision}")
         return recommendation
     except Exception as e:

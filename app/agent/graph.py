@@ -32,7 +32,15 @@ from app.utils.logger import logger
 
 def parse_claim_node(state: ClaimState) -> ClaimState:
     logger.info("NODE parse_claim")
+    if not state.get("claim_json"):
+        logger.error("parse_claim: state is missing claim_json")
+        state["is_valid"] = False
+        state["validation_reason"] = "No claim data was provided."
+        state["current_step"] = "parse_error"
+        return state
     result = parse_claim(state["claim_json"])
+    if "error" in result:
+        logger.error(f"parse_claim: {result['error']}")
     state["claim_id"] = result.get("claim_id")
     state["policy_holder"] = result.get("policy_holder")
     state["vendor_name"] = result.get("vendor_name")

@@ -86,6 +86,27 @@ def test_all_expected_results(monkeypatch, case_file, decision, expected):
     assert state["final_decision"] == expected
 
 
+def test_malformed_json_returns_invalid(monkeypatch):
+    # Garbage input must flow through to INVALID, not crash the graph.
+    fake_llm = FakeLLM([])
+    monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake_llm)
+    monkeypatch.setattr(tools, "get_policy_store", lambda: FakeStore())
+    graph = create_claims_processing_graph()
+    state = graph.invoke({"claim_json": "not json at all", "current_step": "init"})
+    assert state["final_decision"] == "INVALID"
+    assert state["is_valid"] is False
+    assert fake_llm.prompts == []
+
+
+def test_missing_claim_json_does_not_crash(monkeypatch):
+    fake_llm = FakeLLM([])
+    monkeypatch.setattr(tools, "get_llm", lambda *a, **k: fake_llm)
+    monkeypatch.setattr(tools, "get_policy_store", lambda: FakeStore())
+    graph = create_claims_processing_graph()
+    state = graph.invoke({"current_step": "init"})
+    assert state["final_decision"] == "INVALID"
+
+
 def test_not_covered_short_circuits_without_llm(monkeypatch):
     # A claim on a policy with outstanding dues (PN-3) is denied without ever
     # invoking the LLM.

@@ -91,6 +91,8 @@ All settings come from environment variables (see `.env.example`):
 | `MODEL_NAME` | `gpt-4o-mini` | Chat model |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
 | `HIGH_AMOUNT_THRESHOLD` | `10000` | Amount that triggers manual review |
+| `LLM_TIMEOUT_SECONDS` | `30` | Per-request LLM timeout |
+| `LLM_MAX_RETRIES` | `2` | Bounded automatic LLM retries |
 | `POLICY_PDF_PATH` | `./data/policy.pdf` | Policy document to index |
 | `COVERAGE_CSV_PATH` | `./data/coverage_data.csv` | Coverage table |
 
