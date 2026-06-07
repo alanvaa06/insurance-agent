@@ -1,5 +1,8 @@
 # Insurance Claims Processing Agent
 
+**Live demo:** https://huggingface.co/spaces/alanvaa/insurance-claims-agent
+(runs in demo mode, no API key required)
+
 Automated adjudication of auto-repair insurance claims. A LangGraph workflow
 parses and validates a claim, checks policy coverage, retrieves relevant policy
 text (RAG over a policy PDF with ChromaDB), asks an LLM for a policy-grounded
@@ -98,6 +101,7 @@ All settings come from environment variables (see `.env.example`):
 
 ## Deployment
 
+- Hugging Face Space (demo, no secrets): [deploy/huggingface/DEPLOY.md](deploy/huggingface/DEPLOY.md)
 - AWS EC2: [AWS_EC2_Deployment_Steps.md](AWS_EC2_Deployment_Steps.md)
 - Docker Hub image: [Docker_HUB_TO_Instance.md](Docker_HUB_TO_Instance.md)
 - Local Docker:
